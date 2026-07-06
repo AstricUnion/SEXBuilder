@@ -22,117 +22,156 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ]]
 
-function lookupify(tb)
+-- eyecandy to increase readability for empty if branches and keep luacheck happy
+local function do_nothing() end
+
+local function lookupify(tb)
+	local t = {}
 	for _, v in pairs(tb) do
-		tb[v] = true
+		t[v] = true
 	end
-	return tb
+	return t
 end
 
-function CountTable(tb)
-	local c = 0
-	for _ in pairs(tb) do c = c + 1 end
+local function CountTable(tb, limit)
+	local c, k = 0, next(tb, nil)
+	while k ~= nil do
+		c = c + 1
+		if limit and (c >= limit) then
+			break
+		end
+		k = next(tb, k)
+	end
 	return c
 end
 
-function FormatTableInt(tb, atIndent, ignoreFunc)
-	if tb.Print then
+local indentation = '    ' -- normally either multiple spaces or "\t"
+local function indentStr(level)
+	return string.rep(indentation, level or 0)
+end
+
+local function FormatTable(tb, atIndent, ignoreFunc)
+	-- Note: This is currently unused,
+	-- and it might be better to check for a __tostring metamethod instead
+	if type(tb.Print) == 'function' then
 		return tb.Print()
 	end
+	-- set parameter defaults
 	atIndent = atIndent or 0
-	local useNewlines = (CountTable(tb) > 1)
-	local baseIndent = string.rep('    ', atIndent+1)
-	local out = "{"..(useNewlines and '\n' or '')
+	ignoreFunc = ignoreFunc or function()
+		return false
+	end
+
+	local consecutiveIndex, useNewlines = 1, CountTable(tb, 2) > 1
+	local baseIndent = indentStr(atIndent + 1)
+	local out = {'{'} -- table of output strings
+	if useNewlines then
+		table.insert(out, '\n')
+	end
+
 	for k, v in pairs(tb) do
-		if type(v) ~= 'function' and not ignoreFunc(k) then
-			out = out..(useNewlines and baseIndent or '')
-			if type(k) == 'number' then
-				--nothing to do
-			elseif type(k) == 'string' and k:match("^[A-Za-z_][A-Za-z0-9_]*$") then 
-				out = out..k.." = "
-			elseif type(k) == 'string' then
-				out = out.."[\""..k.."\"] = "
-			else
-				out = out.."["..tostring(k).."] = "
+		local type_k, type_v = type(k), type(v) -- cache types, used multiple times
+		if type_v ~= 'function' and not ignoreFunc(k) then
+			if useNewlines then
+				table.insert(out, baseIndent)
 			end
-			if type(v) == 'string' then
-				out = out.."\""..v.."\""
-			elseif type(v) == 'number' then
-				out = out..v
-			elseif type(v) == 'table' then
-				out = out..FormatTableInt(v, atIndent+(useNewlines and 1 or 0), ignoreFunc)
+
+			-- key
+			if type_k == 'string' then
+				if k:match("^[A-Za-z_][A-Za-z0-9_]*$") then
+					table.insert(out, k) -- plain identifier key, no need to quote
+				else
+					-- bracket and quote key
+					table.insert(out, '["')
+					table.insert(out, k)
+					table.insert(out, '"]')
+				end
+				table.insert(out, " = ")
+			elseif type_k == 'number' and k == consecutiveIndex then
+				-- as long as a "list"-type table has consecutive entries,
+				-- there's no need to output the key
+				consecutiveIndex = consecutiveIndex + 1
 			else
-				out = out..tostring(v)
+				-- non-consecutive indices and non-string keys
+				table.insert(out, '[')
+				table.insert(out, tostring(k))
+				table.insert(out, '] = ')
+			end
+
+			-- value
+			if type_v == 'string' then
+				table.insert(out, '"')
+				table.insert(out, v)
+				table.insert(out, '"')
+			elseif type_v == 'table' then
+				-- recursive output of table-type values
+				table.insert(out,
+					FormatTable(v, atIndent + (useNewlines and 1 or 0), ignoreFunc))
+			else
+				table.insert(out, tostring(v))
 			end
 			if next(tb, k) then
-				out = out..","
+				table.insert(out, ',')
 			end
 			if useNewlines then
-				out = out..'\n'
+				table.insert(out, '\n')
 			end
 		end
 	end
-	out = out..(useNewlines and string.rep('    ', atIndent) or '').."}"
-	return out
-end
-
-function FormatTable(tb, ignoreFunc)
-	ignoreFunc = ignoreFunc or function() 
-		return false 
+	if useNewlines then
+		table.insert(out, indentStr(atIndent))
 	end
-	return FormatTableInt(tb, 0, ignoreFunc)
+	table.insert(out, '}')
+	return table.concat(out)
 end
 
-local WhiteChars = lookupify{' ', '\n', '\t', '\r'}
+local WhiteChars = lookupify{' ', '\n', '\t', '\r', '\a', '\b', string.char(11), string.char(12)}
+-- '\f', '\v', '\z' are not whitechars in original lua 5.1, they're equals to ♀, ♂, z | glua translate them to char(11), char(12) and zero len string like latest lua
 
-local EscapeForCharacter = {['\r'] = '\\r', ['\n'] = '\\n', ['\t'] = '\\t', ['"'] = '\\"', ["'"] = "\\'", ['\\'] = '\\'}
+local EscapeForCharacter = {['\r'] = '\\r', ['\a'] = '\\a', ['\b'] = '\\b', ['\f'] = '\\f', ['\v'] = '\\v', ['\n'] = '\\n', ['\t'] = '\\t', ['"'] = '\\"', ["'"] = "\\'", ['\\'] = '\\'}
 
-local CharacterForEscape = {['r'] = '\r', ['n'] = '\n', ['t'] = '\t', ['"'] = '"', ["'"] = "'", ['\\'] = '\\'}
+local CharacterForEscape = {['r'] = '\r', ['a'] = '\a', ['b'] = '\b', ['f'] = '\f', ['v'] = '\v', ['n'] = '\n', ['t'] = '\t', ['z'] = '\z', ['"'] = '"', ["'"] = "'", ['\\'] = '\\'}
 
-local AllIdentStartChars = lookupify{'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 
-                                     'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 
+local AllIdentStartChars = lookupify{'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i',
+                                     'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r',
                                      's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-                                     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 
-                                     'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 
+                                     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I',
+                                     'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R',
                                      'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '_'}
 
-local AllIdentChars = lookupify{'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 
-                                'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 
+local AllIdentChars = lookupify{'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i',
+                                'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r',
                                 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-                                'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 
-                                'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 
+                                'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I',
+                                'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R',
                                 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '_',
                                 '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'}
 
 local Digits = lookupify{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'}
 
-local HexDigits = lookupify{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 
+local HexDigits = lookupify{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
                             'A', 'a', 'B', 'b', 'C', 'c', 'D', 'd', 'E', 'e', 'F', 'f'}
 
 local Symbols = lookupify{'+', '-', '*', '/', '^', '%', ',', '{', '}', '[', ']', '(', ')', ';', '#', '.', ':'}
 
-local EqualSymbols = lookupify{'~', '=', '>', '<'}
+local EqualSymbols = lookupify{'~', '!', '=', '>', '<'}
 
 local Keywords = lookupify{
     'and', 'break', 'do', 'else', 'elseif',
-    'end', 'false', 'for', 'function', 'goto', 'if',
+    'end', 'false', 'for', 'function', 'if',
     'in', 'local', 'nil', 'not', 'or', 'repeat',
     'return', 'then', 'true', 'until', 'while',
-};
+    'continue', '&&', '||'
+}
 
 local BlockFollowKeyword = lookupify{'else', 'elseif', 'until', 'end'}
 
-local UnopSet = lookupify{'-', 'not', '#'}
+local UnopSet = lookupify{'-', 'not', '#', '!'}
 
 local BinopSet = lookupify{
-	'+', '-', '*', '/', '%', '^', '#',
-	'..', '.', ':',
-	'>', '<', '<=', '>=', '~=', '==',
-	'and', 'or'
-}
-
-local GlobalRenameIgnore = lookupify{
-
+	'+', '-', '*', '/', '%', '^', '..',
+	'>', '<', '<=', '>=', '~=', '==', '!=',
+	'and', 'or', '&&', '||'
 }
 
 local BinaryPriority = {
@@ -145,22 +184,68 @@ local BinaryPriority = {
    ['..'] = {5, 4};
    ['=='] = {3, 3};
    ['~='] = {3, 3};
+   ['!='] = {3, 3};
    ['>'] = {3, 3};
    ['<'] = {3, 3};
    ['>='] = {3, 3};
    ['<='] = {3, 3};
    ['and'] = {2, 2};
+   ['&&'] = {2, 2};
    ['or'] = {1, 1};
-};
+   ['||'] = {1, 1};
+}
 local UnaryPriority = 8
 
 -- Eof, Ident, Keyword, Number, String, Symbol
 
-function CreateLuaTokenStream(text)
+-- decode string position to line and column number, with optional start values
+local function _decode_position(text, pos, line, col)
+	line, col = line or 1, col or 0
+	if pos > 0 then
+		if pos > text:len() then
+			pos = text:len()
+		end
+		for i = 1, pos do
+			col = col + 1
+			if text:sub(i, i) == '\n' then
+				line = line + 1
+				col = 0
+			end
+		end
+		if col == 0 then
+			col = 1
+		end
+	end
+	return line, col
+end
+local BOM = lookupify{
+	string.char(0xEF, 0xBB, 0xBF), -- UTF-8
+	string.char(0xFE, 0xFF), -- UTF-16 (BE)
+	string.char(0xFF, 0xFE), -- UTF-16 (LE)
+	string.char(0x00, 0x00, 0xFE, 0xFF), -- UTF-32 (BE)
+	string.char(0xFF, 0xFE, 0x00, 0x00), -- UTF-32 (LE)
+	string.char(0x2B, 0x2F, 0x76), -- UTF-7
+	string.char(0xF7, 0x64, 0x4C), -- UTF-1
+	string.char(0xDD, 0x73, 0x66, 0x73), -- UTF-EBCDIC
+	string.char(0x0E, 0xFE, 0xFF), -- SCSU
+	string.char(0xFB, 0xEE, 0x28), -- BOCU-1
+	string.char(0x84, 0x31, 0x95, 0x33) -- GB-18030
+}
+local function CreateLuaTokenStream(text)
+	-- UTF with BOM fix
+	local byte2, byte3, byte4 = text:sub(0,2), text:sub(0,3), text:sub(0,4)
+	if BOM[byte2] then
+		text = text:sub(3)
+	elseif BOM[byte3] then
+		text = text:sub(4)
+	elseif BOM[byte4] then
+		text = text:sub(5)
+	end
+	--text = text:gsub('\r', '\r\n') -- Macintosh (CR) fix
+
 	-- Tracking for the current position in the buffer, and
 	-- the current line / character we are on.
 	local p = 1
-	local length = #text
 
 	-- Output buffer for tokens
 	local tokenBuffer = {}
@@ -168,41 +253,21 @@ function CreateLuaTokenStream(text)
 	-- Get a character, or '' if at eof
 	local function look(n)
 		n = p + (n or 0)
-		if n <= length then
-			return text:sub(n, n)
-		else
-			return ''
-		end
+		return text:sub(n, n)
 	end
 	local function get()
-		if p <= length then
-			local c = text:sub(p, p)
-			p = p + 1
-			return c
-		else
-			return ''
-		end
+		local c = text:sub(p, p)
+		p = p + 1
+		return c
 	end
 
 	-- Error
-	local olderr = error
-	local function error(str)
-		local q = 1
-		local line = 1
-		local char = 1
-		while q <= p do
-			if text:sub(q, q) == '\n' then
-				line = line + 1
-				char = 1
-			else
-				char = char + 1
-			end
-			q = q + 1
-		end
+	local function _error(str)
+		local line, col = _decode_position(text, p)
 		for _, token in pairs(tokenBuffer) do
 			print(token.Type.."<"..token.Source..">")
 		end
-		olderr("file<"..line..":"..char..">: "..str)
+		error("file<"..line..":"..col..">: "..str)
 	end
 
 	-- Consume a long data with equals count of `eqcount'
@@ -210,10 +275,10 @@ function CreateLuaTokenStream(text)
 		while true do
 			local c = get()
 			if c == '' then
-				error("Unfinished long string.")
+				_error("Unfinished long string.")
 			elseif c == ']' then
 				local done = true -- Until contested
-				for i = 1, eqcount do
+				for _ = 1, eqcount do
 					if look() == '=' then
 						p = p + 1
 					else
@@ -232,22 +297,20 @@ function CreateLuaTokenStream(text)
 	-- Precondition: The first `[` has been consumed
 	-- Return: nil or the equals count
 	local function getopen()
-		local startp = p
-		while look() == '=' do
-			p = p + 1
+		local eqcount = 0
+		while look(eqcount) == '=' do
+			eqcount = eqcount + 1
 		end
-		if look() == '[' then
-			p = p + 1
-			return p - startp - 1
-		else
-			p = startp
-			return nil
+		if look(eqcount) == '[' then
+			p = p + eqcount + 1
+			return eqcount
 		end
+		return nil
 	end
 
+	local whiteStart, tokenStart -- used in main loop, upvalues for token()
+
 	-- Add token
-	local whiteStart = 1
-	local tokenStart = 1
 	local function token(type)
 		local tk = {
 			Type = type;
@@ -255,8 +318,6 @@ function CreateLuaTokenStream(text)
 			Source = text:sub(tokenStart, p-1);
 		}
 		table.insert(tokenBuffer, tk)
-		whiteStart = p
-		tokenStart = p
 		return tk
 	end
 
@@ -282,22 +343,39 @@ function CreateLuaTokenStream(text)
 							longdata(eqcount)
 						else
 							-- Normal comment body
-							while true do
-								local c2 = get()
-								if c2 == '' or c2 == '\n' then
-									break
-								end
-							end
+							local c2
+							repeat
+								c2 = get()
+							until c2 == '' or c2 == '\n'
 						end
 					else
 						-- Normal comment body
-						while true do
-							local c2 = get()
-							if c2 == '' or c2 == '\n' then
-								break
-							end
-						end
+						local c2
+						repeat
+							c2 = get()
+						until c2 == '' or c2 == '\n'
 					end
+				else
+					break
+				end
+			elseif c == '/' then
+				local c2 = look(1)
+				if c2 == '*' then
+					p = p + 2
+					-- Long comment body without levels
+					repeat
+						c2 = get()
+						if c2 == '*' and look() =='/' then
+							get()
+							break
+						end
+					until c2 == ''
+				elseif c2 == '/' then
+					p = p + 2
+					-- Normal comment body
+					repeat
+						c2 = get()
+					until c2 == '' or c2 == '\n'
 				else
 					break
 				end
@@ -307,7 +385,6 @@ function CreateLuaTokenStream(text)
 				break
 			end
 		end
-		local leadingWhite = text:sub(whiteStart, p-1)
 
 		-- Mark the token start
 		tokenStart = p
@@ -320,19 +397,50 @@ function CreateLuaTokenStream(text)
 			break
 		elseif c1 == '\'' or c1 == '\"' then
 			-- String constant
-			while true do
-				local c2 = get()
-				if c2 == '\\' then
+			local c2
+			repeat
+				c2 = get()
+				if c2 == '' then
+					_error("Unfinished string.")
+				elseif c2 == '\\' then
 					local c3 = get()
-					local esc = CharacterForEscape[c3]
-					if not esc then
+					if c3 == 'x' then -- hexademical char
+						local d1, d2 = look(), look()
+						if not HexDigits[d1] or not HexDigits[d2] then
+							error('Hexadecimal digit(-s) expected near `"..c3.."`.')
+						end
+					elseif not Digits[c3] and not CharacterForEscape[c3] then
 						error("Invalid Escape Sequence `"..c3.."`.")
 					end
-				elseif c2 == c1 then
+				end
+			until c2 == c1
+			token('String')
+		elseif c1 == ':' and look() == ':' then
+			local c2 = get()
+			-- label ::= ‘::’ Name ‘::’
+			c2 = get() -- first char for lexical name
+			if not AllIdentStartChars[c2] then
+				error('Bad identifier for goto label.')
+			end
+			repeat
+				c2 = get()
+				if c2 == '' then
+					_error('Unfinished identifier')
+				elseif c2 == ':' then
 					break
 				end
+				if not AllIdentChars[c2] then
+					error('Bad identifier for goto label.')
+				end
+			until c2 == c1 -- when we reach next :
+			local c3 = get() -- next char should be :
+			if c3 ~= ':' then
+				error('Invalid goto label.')
 			end
-			token('String')
+			if Keywords[text:sub(tokenStart + 2, p - 3)] then
+				error('Goto label cannot be keyword')
+			end
+			token('GotoLabel')
 		elseif AllIdentStartChars[c1] then
 			-- Ident or Keyword
 			while AllIdentChars[look()] do
@@ -400,18 +508,25 @@ function CreateLuaTokenStream(text)
 				p = p + 1
 			end
 			token('Symbol')
+		elseif (c1 == '&' and look() == '&') or (c1 == '|' and look() == '|') then
+			get()
+			token('Keyword')
 		elseif Symbols[c1] then
 			token('Symbol')
 		else
-			error("Bad symbol `"..c1.."` in source.")
+			_error("Bad symbol `"..c1.."` in source. Debug: " .. string.sub(text, math.max(p - 50, 0), p + 50))
 		end
 	end
 	return tokenBuffer
 end
 
-function CreateLuaParser(text)
+local function CreateLuaParser(tokens)
+	if type(tokens) == "string" then
+		-- tokenize from string first
+		tokens = CreateLuaTokenStream(tokens)
+	end
 	-- Token stream and pointer into it
-	local tokens = CreateLuaTokenStream(text)
+	assert(type(tokens) == "table")
 	-- for _, tok in pairs(tokens) do
 	-- 	print(tok.Type..": "..tok.Source)
 	-- end
@@ -430,32 +545,18 @@ function CreateLuaParser(text)
 	end
 
 	local function getTokenStartPosition(token)
-		local line = 1
-		local char = 0
+		local line, col = 1, 0
 		local tkNum = 1
-		while true do
+		repeat
 			local tk = tokens[tkNum]
-			local text;
-			if tk == token then
-				text = tk.LeadingWhite
-			else
-				text = tk.LeadingWhite..tk.Source
-			end
-			for i = 1, #text do
-				local c = text:sub(i, i)
-				if c == '\n' then
-					line = line + 1
-					char = 0
-				else
-					char = char + 1
-				end
-			end
-			if tk == token then
-				break
-			end
 			tkNum = tkNum + 1
-		end
-		return line..":"..(char+1)
+			local text = tk.LeadingWhite
+			if tk ~= token then
+				text = text .. tk.Source
+			end
+			line, col = _decode_position(text, #text, line, col)
+		until tk == token
+		return line..":"..(col+1)
 	end
 	local function debugMark()
 		local tk = peek()
@@ -465,32 +566,40 @@ function CreateLuaParser(text)
 	local function isBlockFollow()
 		local tok = peek()
 		return tok.Type == 'Eof' or (tok.Type == 'Keyword' and BlockFollowKeyword[tok.Source])
-	end	
+	end
 	local function isUnop()
 		return UnopSet[peek().Source] or false
 	end
 	local function isBinop()
 		return BinopSet[peek().Source] or false
 	end
-	local function expect(type, source)
+	local function expect(type, source, type2, source2)
 		local tk = peek()
 		if tk.Type == type and (source == nil or tk.Source == source) then
+			return get()
+		elseif tk.Type == type2 and (source2 == nil or tk.Source == source2) then
 			return get()
 		else
 			for i = -3, 3 do
 				print("Tokens["..i.."] = `"..peek(i).Source.."`")
 			end
 			if source then
-				error(getTokenStartPosition(tk)..": `"..source.."` expected.")
+				error(getTokenStartPosition(tk)..": `"..source.."` expected, got "..tk.Type..".")
 			else
-				error(getTokenStartPosition(tk)..": "..type.." expected.")
+				error(getTokenStartPosition(tk)..": "..type
+					  ..(type2 and (" or "..type2) or "")
+					  .." expected, got "..tk.Type..".")
 			end
 		end
 	end
 
 	local function MkNode(node)
-		local getf = node.GetFirstToken
-		local getl = node.GetLastToken
+		local function _GetSelfToken(self)
+			return self.Token
+		end
+
+		local getf = node.GetFirstToken or _GetSelfToken
+		local getl = node.GetLastToken or _GetSelfToken
 		function node:GetFirstToken()
 			local t = getf(self)
 			assert(t)
@@ -505,8 +614,7 @@ function CreateLuaParser(text)
 	end
 
 	-- Forward decls
-	local block;
-	local expr;
+	local block, expr
 
 	-- Expression list
 	local function exprlist()
@@ -542,12 +650,6 @@ function CreateLuaParser(text)
 			return MkNode{
 				Type = 'VariableExpr';
 				Token = get();
-				GetFirstToken = function(self)
-					return self.Token
-				end;
-				GetLastToken = function(self)
-					return self.Token
-				end;
 			}
 		else
 			print(debugMark())
@@ -555,7 +657,7 @@ function CreateLuaParser(text)
 		end
 	end
 
-	function tableexpr()
+	local function tableexpr()
 		local obrace = expect('Symbol', '{')
 		local entries = {}
 		local separators = {}
@@ -619,16 +721,21 @@ function CreateLuaParser(text)
 	end
 
 	-- List of identifiers
-	local function varlist()
-		local varList = {}
-		local commaList = {}
-		if peek().Type == 'Ident' then
+	local function varlist(isFuncDecl)
+		local varList, commaList, token = {}, {}, peek()
+		if token.Type == 'Ident' then
+			table.insert(varList, get())
+		elseif isFuncDecl and (token.Source == '...') then
 			table.insert(varList, get())
 		end
 		while peek().Source == ',' do
 			table.insert(commaList, get())
-			local id = expect('Ident')
-			table.insert(varList, id)
+			if isFuncDecl then
+				token = expect('Ident', nil, 'Symbol', '...')
+			else
+				token = expect('Ident')
+			end
+			table.insert(varList, token)
 		end
 		return varList, commaList
 	end
@@ -650,8 +757,7 @@ function CreateLuaParser(text)
 	local function funcdecl(isAnonymous)
 		local functionKw = get()
 		--
-		local nameChain;
-		local nameChainSeparator;
+		local nameChain, nameChainSeparator
 		--
 		if not isAnonymous then
 			nameChain = {}
@@ -670,7 +776,7 @@ function CreateLuaParser(text)
 		end
 		--
 		local oparenTk = expect('Symbol', '(')
-		local argList, argCommaList = varlist()
+		local argList, argCommaList = varlist(true)
 		local cparenTk = expect('Symbol', ')')
 		local fbody, enTk = blockbody('end')
 		--
@@ -695,7 +801,7 @@ function CreateLuaParser(text)
 		}
 	end
 
-	-- Argument list passed to a funciton
+	-- Argument list passed to a function
 	local function functionargs()
 		local tk = peek()
 		if tk.Source == '(' then
@@ -740,16 +846,24 @@ function CreateLuaParser(text)
 			return MkNode{
 				CallType = 'StringCall';
 				Token = get();
-				GetFirstToken = function(self)
-					return self.Token
-				end;
-				GetLastToken = function(self)
-					return self.Token
-				end;
 			}
 		else
 			error("Function arguments expected.")
 		end
+	end
+
+	local function callexpr(base)
+		return MkNode{
+			Type = 'CallExpr';
+			Base = base;
+			FunctionArguments = functionargs();
+			GetFirstToken = function(self)
+				return self.Base:GetFirstToken()
+			end;
+			GetLastToken = function(self)
+				return self.FunctionArguments:GetLastToken()
+			end;
+		}
 	end
 
 	local function primaryexpr()
@@ -807,92 +921,37 @@ function CreateLuaParser(text)
 					end;
 				}
 			elseif tk.Source == '{' then
-				base = MkNode{
-					Type = 'CallExpr';
-					Base = base;
-					FunctionArguments = functionargs();
-					GetFirstToken = function(self)
-						return self.Base:GetFirstToken()
-					end;
-					GetLastToken = function(self)
-						return self.FunctionArguments:GetLastToken()
-					end;
-				}
+				base = callexpr(base) -- TableCall
 			elseif tk.Source == '(' then
-				base = MkNode{
-					Type = 'CallExpr';
-					Base = base;
-					FunctionArguments = functionargs();
-					GetFirstToken = function(self)
-						return self.Base:GetFirstToken()
-					end;
-					GetLastToken = function(self)
-						return self.FunctionArguments:GetLastToken()
-					end;
-				}
+				base = callexpr(base) -- ArgCall
+			elseif tk.Type == 'String' then
+				base = callexpr(base) -- StringCall
 			else
 				return base
 			end
 		end
 	end
 
+	-- Create a "literal" node with a given type (string)
+	local function literal(_type)
+		return MkNode{
+			Type = _type;
+			Token = get();
+		}
+	end
+
 	local function simpleexpr()
 		local tk = peek()
 		if tk.Type == 'Number' then
-			return MkNode{
-				Type = 'NumberLiteral';
-				Token = get();
-				GetFirstToken = function(self)
-					return self.Token
-				end;
-				GetLastToken = function(self)
-					return self.Token
-				end;
-			}
+			return literal('NumberLiteral')
 		elseif tk.Type == 'String' then
-			return MkNode{
-				Type = 'StringLiteral';
-				Token = get();
-				GetFirstToken = function(self)
-					return self.Token
-				end;
-				GetLastToken = function(self)
-					return self.Token
-				end;
-			}
+			return literal('StringLiteral')
 		elseif tk.Source == 'nil' then
-			return MkNode{
-				Type = 'NilLiteral';
-				Token = get();
-				GetFirstToken = function(self)
-					return self.Token
-				end;
-				GetLastToken = function(self)
-					return self.Token
-				end;
-			}
+			return literal('NilLiteral')
 		elseif tk.Source == 'true' or tk.Source == 'false' then
-			return MkNode{
-				Type = 'BooleanLiteral';
-				Token = get();
-				GetFirstToken = function(self)
-					return self.Token
-				end;
-				GetLastToken = function(self)
-					return self.Token
-				end;
-			}
+			return literal('BooleanLiteral')
 		elseif tk.Source == '...' then
-			return MkNode{
-				Type = 'VargLiteral';
-				Token = get();
-				GetFirstToken = function(self)
-					return self.Token
-				end;
-				GetLastToken = function(self)
-					return self.Token
-				end;
-			}
+			return literal('VargLiteral')
 		elseif tk.Source == '{' then
 			return tableexpr()
 		elseif tk.Source == 'function' then
@@ -903,7 +962,7 @@ function CreateLuaParser(text)
 	end
 
 	local function subexpr(limit)
-		local curNode;
+		local curNode
 
 		-- Initial Base Expression
 		if isUnop() then
@@ -920,11 +979,10 @@ function CreateLuaParser(text)
 					return self.Rhs:GetLastToken()
 				end;
 			}
-		else 
+		else
 			curNode = simpleexpr()
 			assert(curNode, "nil simpleexpr")
 		end
-
 		-- Apply Precedence Recursion Chain
 		while isBinop() and BinaryPriority[peek().Source][1] > limit do
 			local opTk = get()
@@ -1013,7 +1071,7 @@ function CreateLuaParser(text)
 		local elseClauses = {}
 		while peek().Source == 'elseif' or peek().Source == 'else' do
 			local elseifKw = get()
-			local elseifCondition, elseifThenKw;
+			local elseifCondition, elseifThenKw
 			if elseifKw.Source == 'elseif' then
 				elseifCondition = expr()
 				elseifThenKw = expect('Keyword', 'then')
@@ -1098,7 +1156,6 @@ function CreateLuaParser(text)
 	local function forstat()
 		local forKw = get()
 		local loopVars, loopVarCommas = varlist()
-		local node = {}
 		if peek().Source == '=' then
 			local eqTk = get()
 			local exprList, exprCommaList = exprlist()
@@ -1200,7 +1257,7 @@ function CreateLuaParser(text)
 			-- Local variable declaration
 			local varList, varCommaList = varlist()
 			local exprList, exprCommaList = {}, {}
-			local eqToken;
+			local eqToken
 			if peek().Source == '=' then
 				eqToken = get()
 				exprList, exprCommaList = exprlist()
@@ -1212,7 +1269,7 @@ function CreateLuaParser(text)
 				Token_Local = localKw;
 				Token_Equals = eqToken;
 				Token_VarCommaList = varCommaList;
-				Token_ExprCommaList = exprCommaList;	
+				Token_ExprCommaList = exprCommaList;
 				GetFirstToken = function(self)
 					return self.Token_Local
 				end;
@@ -1232,8 +1289,7 @@ function CreateLuaParser(text)
 	-- Return statement
 	local function retstat()
 		local returnKw = get()
-		local exprList;
-		local commaList;
+		local exprList, commaList
 		if isBlockFollow() or peek().Source == ';' then
 			exprList = {}
 			commaList = {}
@@ -1258,6 +1314,23 @@ function CreateLuaParser(text)
 		}
 	end
 
+	-- Goto statement
+	local function gotostat()
+		local gotoKw = get()
+		local gotoTo = get()
+		return {
+			Type = 'GotoStat';
+			Token_Goto = gotoKw;
+			Token_Marker = gotoTo;
+			GetFirstToken = function(self)
+				return self.Token_Goto
+			end;
+			GetLastToken = function(self)
+				return self.Token_Marker
+			end;
+		}
+	end
+
 	-- Break statement
 	local function breakstat()
 		local breakKw = get()
@@ -1269,6 +1342,36 @@ function CreateLuaParser(text)
 			end;
 			GetLastToken = function(self)
 				return self.Token_Break
+			end;
+		}
+	end
+
+	-- Continue statement
+	local function continuestat()
+		local continueKw = get()
+		return {
+			Type = 'ContinueStat';
+			Token_Continue = continueKw;
+			GetFirstToken = function(self)
+				return self.Token_Continue
+			end;
+			GetLastToken = function(self)
+				return self.Token_Continue
+			end;
+		}
+	end
+
+	-- Statement for label (EBNF contains this as part of statement)
+	local function labelstat()
+		local label = get()
+		return {
+			Type = 'LabelStat';
+			Token_Label = label;
+			GetFirstToken = function(self)
+				return self.Token_Label
+			end;
+			GetLastToken = function(self)
+				return self.Token_Label
 			end;
 		}
 	end
@@ -1290,10 +1393,16 @@ function CreateLuaParser(text)
 			return false, funcdecl(false)
 		elseif tok.Source == 'local' then
 			return false, localdecl()
+		elseif tok.Source == 'goto' and peek(1).Type == "Ident" then
+			return true, gotostat()
 		elseif tok.Source == 'return' then
 			return true, retstat()
 		elseif tok.Source == 'break' then
 			return true, breakstat()
+		elseif tok.Source == 'continue' then
+			return true, continuestat()
+		elseif tok.Type == 'GotoLabel' then
+			return false, labelstat()
 		else
 			return false, exprstat()
 		end
@@ -1306,7 +1415,7 @@ function CreateLuaParser(text)
 		local isLast = false
 		while not isLast and not isBlockFollow() do
 			-- Parse statement
-			local stat;
+			local stat
 			isLast, stat = statement()
 			table.insert(statements, stat)
 			local next = peek()
@@ -1341,9 +1450,9 @@ function CreateLuaParser(text)
 	return block()
 end
 
-function VisitAst(ast, visitors)
+local function VisitAst(ast, visitors)
 	local ExprType = lookupify{
-		'BinopExpr'; 'UnopExpr'; 
+		'BinopExpr'; 'UnopExpr';
 		'NumberLiteral'; 'StringLiteral'; 'NilLiteral'; 'BooleanLiteral'; 'VargLiteral';
 		'FieldExpr'; 'IndexExpr';
 		'MethodExpr'; 'CallExpr';
@@ -1355,6 +1464,9 @@ function VisitAst(ast, visitors)
 
 	local StatType = lookupify{
 		'StatList';
+		'LabelStat';
+		'ContinueStat';
+		'GotoStat';
 		'BreakStat';
 		'ReturnStat';
 		'LocalVarStat';
@@ -1371,7 +1483,7 @@ function VisitAst(ast, visitors)
 	}
 
 	-- Check for typos in visitor construction
-	for visitorSubject, visitor in pairs(visitors) do
+	for visitorSubject, _ in pairs(visitors) do
 		if not StatType[visitorSubject] and not ExprType[visitorSubject] then
 			error("Invalid visitor target: `"..visitorSubject.."`")
 		end
@@ -1393,7 +1505,7 @@ function VisitAst(ast, visitors)
 		end
 	end
 
-	local visitExpr, visitStat;
+	local visitExpr, visitStat
 
 	visitExpr = function(expr)
 		if preVisit(expr) then
@@ -1405,11 +1517,11 @@ function VisitAst(ast, visitors)
 			visitExpr(expr.Rhs)
 		elseif expr.Type == 'UnopExpr' then
 			visitExpr(expr.Rhs)
-		elseif expr.Type == 'NumberLiteral' or expr.Type == 'StringLiteral' or 
-			expr.Type == 'NilLiteral' or expr.Type == 'BooleanLiteral' or 
-			expr.Type == 'VargLiteral' 
+		elseif expr.Type == 'NumberLiteral' or expr.Type == 'StringLiteral' or
+			expr.Type == 'NilLiteral' or expr.Type == 'BooleanLiteral' or
+			expr.Type == 'VargLiteral'
 		then
-			-- No children to visit, single token literals
+			do_nothing() -- No children to visit, single token literals
 		elseif expr.Type == 'FieldExpr' then
 			visitExpr(expr.Base)
 		elseif expr.Type == 'IndexExpr' then
@@ -1418,7 +1530,7 @@ function VisitAst(ast, visitors)
 		elseif expr.Type == 'MethodExpr' or expr.Type == 'CallExpr' then
 			visitExpr(expr.Base)
 			if expr.FunctionArguments.CallType == 'ArgCall' then
-				for index, argExpr in pairs(expr.FunctionArguments.ArgList) do
+				for _, argExpr in pairs(expr.FunctionArguments.ArgList) do
 					visitExpr(argExpr)
 				end
 			elseif expr.FunctionArguments.CallType == 'TableCall' then
@@ -1427,11 +1539,11 @@ function VisitAst(ast, visitors)
 		elseif expr.Type == 'FunctionLiteral' then
 			visitStat(expr.Body)
 		elseif expr.Type == 'VariableExpr' then
-			-- No children to visit
+			do_nothing() -- No children to visit
 		elseif expr.Type == 'ParenExpr' then
 			visitExpr(expr.Expression)
 		elseif expr.Type == 'TableLiteral' then
-			for index, entry in pairs(expr.EntryList) do
+			for _, entry in pairs(expr.EntryList) do
 				if entry.EntryType == 'Field' then
 					visitExpr(entry.Value)
 				elseif entry.EntryType == 'Index' then
@@ -1455,18 +1567,25 @@ function VisitAst(ast, visitors)
 			return
 		end
 		if stat.Type == 'StatList' then
-			for index, ch in pairs(stat.StatementList) do
+			for _, ch in pairs(stat.StatementList) do
 				visitStat(ch)
 			end
-		elseif stat.Type == 'BreakStat' then
-			-- No children to visit
+		elseif stat.Type == 'LabelStat' then
+			do_nothing() -- No children to visit
+
+		elseif stat.Type == 'BreakStat' or stat.Type == 'ContinueStat' then
+			do_nothing() -- No children to visit
+
+		elseif stat.Type == 'GotoStat' then
+			do_nothing() -- Children is ident, no reason to visit it
+
 		elseif stat.Type == 'ReturnStat' then
-			for index, expr in pairs(stat.ExprList) do
+			for _, expr in pairs(stat.ExprList) do
 				visitExpr(expr)
 			end
 		elseif stat.Type == 'LocalVarStat' then
 			if stat.Token_Equals then
-				for index, expr in pairs(stat.ExprList) do
+				for _, expr in pairs(stat.ExprList) do
 					visitExpr(expr)
 				end
 			end
@@ -1478,12 +1597,12 @@ function VisitAst(ast, visitors)
 			visitStat(stat.Body)
 			visitExpr(stat.Condition)
 		elseif stat.Type == 'GenericForStat' then
-			for index, expr in pairs(stat.GeneratorList) do
+			for _, expr in pairs(stat.GeneratorList) do
 				visitExpr(expr)
 			end
 			visitStat(stat.Body)
 		elseif stat.Type == 'NumericForStat' then
-			for index, expr in pairs(stat.RangeList) do
+			for _, expr in pairs(stat.RangeList) do
 				visitExpr(expr)
 			end
 			visitStat(stat.Body)
@@ -1504,15 +1623,15 @@ function VisitAst(ast, visitors)
 		elseif stat.Type == 'CallExprStat' then
 			visitExpr(stat.Expression)
 		elseif stat.Type == 'AssignmentStat' then
-			for index, ex in pairs(stat.Lhs) do
+			for _, ex in pairs(stat.Lhs) do
 				visitExpr(ex)
 			end
-			for index, ex in pairs(stat.Rhs) do
+			for _, ex in pairs(stat.Rhs) do
 				visitExpr(ex)
 			end
 		else
 			assert(false, "unreachable")
-		end	
+		end
 		postVisit(stat)
 	end
 
@@ -1523,7 +1642,7 @@ function VisitAst(ast, visitors)
 	end
 end
 
-function AddVariableInfo(ast)
+local function AddVariableInfo(ast)
 	local globalVars = {}
 	local currentScope = nil
 
@@ -1585,7 +1704,7 @@ function AddVariableInfo(ast)
 
 	-- Add / reference variables
 	local function addLocalVar(name, setNameFunc, localInfo)
-		assert(localInfo, "Misisng localInfo")
+		assert(localInfo, "Missing localInfo")
 		assert(name, "Missing local var name")
 		local var = {
 			Type = 'Local';
@@ -1691,20 +1810,22 @@ function AddVariableInfo(ast)
 		Pre = function(expr)
 			pushScope()
 			for index, ident in pairs(expr.ArgList) do
-				local var = addLocalVar(ident.Source, function(name)
-					ident.Source = name
-				end, {
-					Type = 'Argument';
-					Index = index;
-				})
+				-- Note: Beware ident.Type == 'Symbol', it may be "..." here!
+				if ident.Type == 'Ident' then
+					addLocalVar(ident.Source,
+						function(name)
+							ident.Source = name
+						end,
+						{ Type = 'Argument';  Index = index; })
+				end
 			end
 		end;
-		Post = function(expr)
+		Post = function()
 			popScope()
 		end;
 	}
 	visitor.VariableExpr = function(expr)
-		-- Variable expression references from existing local varibales
+		-- Variable expression references from existing local variables
 		-- in the current scope, annotating the variable usage with variable
 		-- information.
 		expr.Variable = referenceVariable(expr.Token.Source, function(newName)
@@ -1713,10 +1834,10 @@ function AddVariableInfo(ast)
 	end
 	visitor.StatList = {
 		-- StatList adds a new scope
-		Pre = function(stat)
+		Pre = function()
 			pushScope()
 		end;
-		Post = function(stat)
+		Post = function()
 			popScope()
 		end;
 	}
@@ -1733,7 +1854,7 @@ function AddVariableInfo(ast)
 				end, {
 					Type = 'Local';
 				})
-			end		
+			end
 		end;
 	}
 	visitor.LocalFunctionStat = {
@@ -1748,12 +1869,15 @@ function AddVariableInfo(ast)
 			})
 			pushScope()
 			for index, ident in pairs(stat.FunctionStat.ArgList) do
-				addLocalVar(ident.Source, function(name)
-					ident.Source = name
-				end, {
-					Type = 'Argument';
-					Index = index;
-				})
+				-- Note: Beware ident.Type == 'Symbol', it may be "..." here!
+				if ident.Type == 'Ident' then
+					addLocalVar(ident.Source, function(name)
+						ident.Source = name
+					end, {
+						Type = 'Argument';
+						Index = index;
+					})
+				end
 			end
 		end;
 		Post = function()
@@ -1761,34 +1885,30 @@ function AddVariableInfo(ast)
 		end;
 	}
 	visitor.FunctionStat = {
-		Pre = function(stat) 			
+		Pre = function(stat)
 			-- Function stat adds a new scope containing the function arguments
 			-- as local variables.
 			-- A function stat may also assign to a global variable if it is in
 			-- the form `function foo()` with no additional dots/colons in the 
 			-- name chain.
 			local nameChain = stat.NameChain
-			local var;
-			if #nameChain == 1 then
-				-- If there is only one item in the name chain, then the first item
-				-- is a reference to a global variable.
-				var = addGlobalReference(nameChain[1].Source, function(name)
-					nameChain[1].Source = name
-				end)
-			else
-				var = referenceVariable(nameChain[1].Source, function(name)
-					nameChain[1].Source = name
-				end)
-			end
+			
+			-- Local can be defined at the top of scope
+			local var = referenceVariable(nameChain[1].Source, function(name)
+				nameChain[1].Source = name
+			end)
 			var.AssignedTo = true
 			pushScope()
 			for index, ident in pairs(stat.ArgList) do
-				addLocalVar(ident.Source, function(name)
-					ident.Source = name
-				end, {
-					Type = 'Argument';
-					Index = index;
-				})
+				-- Note: Beware ident.Type == 'Symbol', it may be "..." here!
+				if ident.Type == 'Ident' then
+					addLocalVar(ident.Source, function(name)
+						ident.Source = name
+					end, {
+						Type = 'Argument';
+						Index = index;
+					})
+				end
 			end
 		end;
 		Post = function()
@@ -1858,17 +1978,22 @@ function AddVariableInfo(ast)
 	return globalVars, popScope()
 end
 
--- Prints out an AST to a string
-function PrintAst(ast)
+-- Prints out an AST to stdout, or emits it by appending to a table
+local function PrintAst(ast, tbl_out)
 
-	local printStat, printExpr;
+	local printStat, printExpr
 
 	local function printt(tk)
 		if not tk.LeadingWhite or not tk.Source then
 			error("Bad token: "..FormatTable(tk))
 		end
-		io.write(tk.LeadingWhite)
-		io.write(tk.Source)
+		if tbl_out then
+			table.insert(tbl_out, tk.LeadingWhite)
+			table.insert(tbl_out, tk.Source)
+		else
+			io.write(tk.LeadingWhite)
+			io.write(tk.Source)
+		end
 	end
 
 	printExpr = function(expr)
@@ -1879,9 +2004,9 @@ function PrintAst(ast)
 		elseif expr.Type == 'UnopExpr' then
 			printt(expr.Token_Op)
 			printExpr(expr.Rhs)
-		elseif expr.Type == 'NumberLiteral' or expr.Type == 'StringLiteral' or 
-			expr.Type == 'NilLiteral' or expr.Type == 'BooleanLiteral' or 
-			expr.Type == 'VargLiteral' 
+		elseif expr.Type == 'NumberLiteral' or expr.Type == 'StringLiteral' or
+			expr.Type == 'NilLiteral' or expr.Type == 'BooleanLiteral' or
+			expr.Type == 'VargLiteral'
 		then
 			-- Just print the token
 			printt(expr.Token)
@@ -1971,8 +2096,15 @@ function PrintAst(ast)
 					printt(stat.SemicolonList[index])
 				end
 			end
+		elseif stat.Type == 'LabelStat' then
+			printt(stat.Token_Label)
 		elseif stat.Type == 'BreakStat' then
 			printt(stat.Token_Break)
+		elseif stat.Type == 'ContinueStat' then
+			printt(stat.Token_Continue)
+		elseif stat.Type == 'GotoStat' then
+			printt(stat.Token_Goto)
+			printt(stat.Token_Marker)
 		elseif stat.Type == 'ReturnStat' then
 			printt(stat.Token_Return)
 			for index, expr in pairs(stat.ExprList) do
@@ -2079,7 +2211,7 @@ function PrintAst(ast)
 			end
 			printt(stat.Token_Do)
 			printStat(stat.Body)
-			printt(stat.Token_End)		
+			printt(stat.Token_End)
 		elseif stat.Type == 'WhileStat' then
 			printt(stat.Token_While)
 			printExpr(stat.Condition)
@@ -2124,15 +2256,22 @@ function PrintAst(ast)
 			end
 		else
 			assert(false, "unreachable")
-		end	
+		end
 	end
 
 	printStat(ast)
 end
 
+-- Get an actual string representation of the AST
+local function AstToString(ast)
+	local output = {}
+	PrintAst(ast, output)
+	return table.concat(output)
+end
+
 -- Adds / removes whitespace in an AST to put it into a "standard formatting"
 local function FormatAst(ast)
-	local formatStat, formatExpr;
+	local formatStat, formatExpr
 
 	local currentIndent = 0
 
@@ -2173,7 +2312,7 @@ local function FormatAst(ast)
 		padToken(expr:GetFirstToken())
 	end
 
-	local function formatBody(openToken, bodyStat, closeToken)
+	local function formatBody(openToken, bodyStat, closeToken) -- luacheck: ignore 212
 		indent()
 		formatStat(bodyStat)
 		undent()
@@ -2184,20 +2323,18 @@ local function FormatAst(ast)
 		if expr.Type == 'BinopExpr' then
 			formatExpr(expr.Lhs)
 			formatExpr(expr.Rhs)
-			if expr.Token_Op.Source == '..' then
-				-- No padding on ..
-			else
+			if expr.Token_Op.Source ~= '..' then -- No padding on ..
 				padExpr(expr.Rhs)
 				padToken(expr.Token_Op)
 			end
 		elseif expr.Type == 'UnopExpr' then
 			formatExpr(expr.Rhs)
 			--(expr.Token_Op)
-		elseif expr.Type == 'NumberLiteral' or expr.Type == 'StringLiteral' or 
-			expr.Type == 'NilLiteral' or expr.Type == 'BooleanLiteral' or 
-			expr.Type == 'VargLiteral' 
+		elseif expr.Type == 'NumberLiteral' or expr.Type == 'StringLiteral' or
+			expr.Type == 'NilLiteral' or expr.Type == 'BooleanLiteral' or
+			expr.Type == 'VargLiteral'
 		then
-			-- Nothing to do
+			do_nothing()
 			--(expr.Token)
 		elseif expr.Type == 'FieldExpr' then
 			formatExpr(expr.Base)
@@ -2211,11 +2348,12 @@ local function FormatAst(ast)
 		elseif expr.Type == 'MethodExpr' or expr.Type == 'CallExpr' then
 			formatExpr(expr.Base)
 			if expr.Type == 'MethodExpr' then
+				do_nothing()
 				--(expr.Token_Colon)
 				--(expr.Method)
 			end
 			if expr.FunctionArguments.CallType == 'StringCall' then
-				--(expr.FunctionArguments.Token)
+				do_nothing() --(expr.FunctionArguments.Token)
 			elseif expr.FunctionArguments.CallType == 'ArgCall' then
 				--(expr.FunctionArguments.Token_OpenParen)
 				for index, argExpr in pairs(expr.FunctionArguments.ArgList) do
@@ -2223,10 +2361,12 @@ local function FormatAst(ast)
 					if index > 1 then
 						padExpr(argExpr)
 					end
+					--[[
 					local sep = expr.FunctionArguments.Token_CommaList[index]
 					if sep then
 						--(sep)
 					end
+					--]]
 				end
 				--(expr.FunctionArguments.Token_CloseParen)
 			elseif expr.FunctionArguments.CallType == 'TableCall' then
@@ -2240,26 +2380,26 @@ local function FormatAst(ast)
 				if index > 1 then
 					padToken(arg)
 				end
+				--[[
 				local comma = expr.Token_ArgCommaList[index]
 				if comma then
 					--(comma)
 				end
+				--]]
 			end
 			--(expr.Token_CloseParen)
 			formatBody(expr.Token_CloseParen, expr.Body, expr.Token_End)
 		elseif expr.Type == 'VariableExpr' then
-			--(expr.Token)
+			do_nothing() --(expr.Token)
 		elseif expr.Type == 'ParenExpr' then
 			formatExpr(expr.Expression)
 			--(expr.Token_OpenParen)
 			--(expr.Token_CloseParen)
 		elseif expr.Type == 'TableLiteral' then
 			--(expr.Token_OpenBrace)
-			if #expr.EntryList == 0 then
-				-- Nothing to do
-			else
+			if #expr.EntryList > 0 then
 				indent()
-				for index, entry in pairs(expr.EntryList) do
+				for _, entry in pairs(expr.EntryList) do
 					if entry.EntryType == 'Field' then
 						applyIndent(entry.Field)
 						padToken(entry.Token_Equals)
@@ -2278,10 +2418,12 @@ local function FormatAst(ast)
 					else
 						assert(false, "unreachable")
 					end
+					--[[
 					local sep = expr.Token_SeparatorList[index]
 					if sep then
 						--(sep)
 					end
+					--]]
 				end
 				undent()
 				applyIndent(expr.Token_CloseBrace)
@@ -2294,41 +2436,50 @@ local function FormatAst(ast)
 
 	formatStat = function(stat)
 		if stat.Type == 'StatList' then
-			for _, stat in pairs(stat.StatementList) do
-				formatStat(stat)
-				applyIndent(stat:GetFirstToken())
+			for _, _stat in pairs(stat.StatementList) do
+				formatStat(_stat)
+				applyIndent(_stat:GetFirstToken())
 			end
-
-		elseif stat.Type == 'BreakStat' then
+		elseif stat.Type == 'LabelStat' then
+			--(stat.Token_Label)
+			do_nothing()
+		elseif stat.Type == 'BreakStat' or stat.Type == 'ContinueStat' then
 			--(stat.Token_Break)
-
+			do_nothing()
+		elseif stat.Type == 'GotoStat' then
+			--(stat.Token_Goto)
+			padToken(stat.Token_Marker)
 		elseif stat.Type == 'ReturnStat' then
 			--(stat.Token_Return)
 			for index, expr in pairs(stat.ExprList) do
 				formatExpr(expr)
 				padExpr(expr)
 				if stat.Token_CommaList[index] then
-					--(stat.Token_CommaList[index])
+					do_nothing() --(stat.Token_CommaList[index])
 				end
 			end
 		elseif stat.Type == 'LocalVarStat' then
 			--(stat.Token_Local)
-			for index, var in pairs(stat.VarList) do
+			for _, var in pairs(stat.VarList) do
 				padToken(var)
+				--[[
 				local comma = stat.Token_VarCommaList[index]
 				if comma then
 					--(comma)
 				end
+				--]]
 			end
 			if stat.Token_Equals then
 				padToken(stat.Token_Equals)
-				for index, expr in pairs(stat.ExprList) do
+				for _, expr in pairs(stat.ExprList) do
 					formatExpr(expr)
 					padExpr(expr)
+					--[[
 					local comma = stat.Token_ExprCommaList[index]
 					if comma then
 						--(comma)
 					end
+					--]]
 				end
 			end
 		elseif stat.Type == 'LocalFunctionStat' then
@@ -2340,10 +2491,12 @@ local function FormatAst(ast)
 				if index > 1 then
 					padToken(arg)
 				end
+				--[[
 				local comma = stat.FunctionStat.Token_ArgCommaList[index]
 				if comma then
 					--(comma)
 				end
+				--]]
 			end
 			--(stat.FunctionStat.Token_CloseParen)
 			formatBody(stat.FunctionStat.Token_CloseParen, stat.FunctionStat.Body, stat.FunctionStat.Token_End)
@@ -2353,20 +2506,24 @@ local function FormatAst(ast)
 				if index == 1 then
 					padToken(part)
 				end
+				--[[
 				local sep = stat.Token_NameChainSeparator[index]
 				if sep then
 					--(sep)
 				end
+				--]]
 			end
 			--(stat.Token_OpenParen)
 			for index, arg in pairs(stat.ArgList) do
 				if index > 1 then
 					padToken(arg)
 				end
+				--[[
 				local comma = stat.Token_ArgCommaList[index]
 				if comma then
 					--(comma)
 				end
+				--]]
 			end
 			--(stat.Token_CloseParen)
 			formatBody(stat.Token_CloseParen, stat.Body, stat.Token_End)
@@ -2377,44 +2534,52 @@ local function FormatAst(ast)
 			padExpr(stat.Condition)
 		elseif stat.Type == 'GenericForStat' then
 			--(stat.Token_For)
-			for index, var in pairs(stat.VarList) do
+			for _, var in pairs(stat.VarList) do
 				padToken(var)
+				--[[
 				local sep = stat.Token_VarCommaList[index]
 				if sep then
 					--(sep)
 				end
+				--]]
 			end
 			padToken(stat.Token_In)
-			for index, expr in pairs(stat.GeneratorList) do
+			for _, expr in pairs(stat.GeneratorList) do
 				formatExpr(expr)
 				padExpr(expr)
+				--[[
 				local sep = stat.Token_GeneratorCommaList[index]
 				if sep then
 					--(sep)
 				end
+				--]]
 			end
 			padToken(stat.Token_Do)
 			formatBody(stat.Token_Do, stat.Body, stat.Token_End)
 		elseif stat.Type == 'NumericForStat' then
 			--(stat.Token_For)
-			for index, var in pairs(stat.VarList) do
+			for _, var in pairs(stat.VarList) do
 				padToken(var)
+				--[[
 				local sep = stat.Token_VarCommaList[index]
 				if sep then
 					--(sep)
 				end
+				--]]
 			end
 			padToken(stat.Token_Equals)
-			for index, expr in pairs(stat.RangeList) do
+			for _, expr in pairs(stat.RangeList) do
 				formatExpr(expr)
 				padExpr(expr)
+				--[[
 				local sep = stat.Token_RangeCommaList[index]
 				if sep then
 					--(sep)
 				end
+				--]]
 			end
 			padToken(stat.Token_Do)
-			formatBody(stat.Token_Do, stat.Body, stat.Token_End)	
+			formatBody(stat.Token_Do, stat.Body, stat.Token_End)
 		elseif stat.Type == 'WhileStat' then
 			--(stat.Token_While)
 			formatExpr(stat.Condition)
@@ -2456,23 +2621,27 @@ local function FormatAst(ast)
 				if index > 1 then
 					padExpr(ex)
 				end
+				--[[
 				local sep = stat.Token_LhsSeparatorList[index]
 				if sep then
 					--(sep)
 				end
+				--]]
 			end
 			padToken(stat.Token_Equals)
-			for index, ex in pairs(stat.Rhs) do
+			for _, ex in pairs(stat.Rhs) do
 				formatExpr(ex)
 				padExpr(ex)
+				--[[
 				local sep = stat.Token_RhsSeparatorList[index]
 				if sep then
 					--(sep)
 				end
+				--]]
 			end
 		else
 			assert(false, "unreachable")
-		end	
+		end
 	end
 
 	formatStat(ast)
@@ -2480,7 +2649,7 @@ end
 
 -- Strips as much whitespace off of tokens in an AST as possible without causing problems
 local function StripAst(ast)
-	local stripStat, stripExpr;
+	local stripStat, stripExpr
 
 	local function stript(token)
 		token.LeadingWhite = ''
@@ -2498,13 +2667,16 @@ local function StripAst(ast)
 		-- Cases to consider:
 		--  Touching minus signs -> comment: `- -42` -> `--42' is invalid
 		--  Touching words: `a b` -> `ab` is invalid
-		--  Touching digits: `2 3`, can't occurr in the Lua syntax as number literals aren't a primary expression
-		--  Abiguous syntax: `f(x)\n(x)()` is already disallowed, we can't cause a problem by removing newlines
+		--  Touching digits: `2 3`, can't occur in the Lua syntax as number literals aren't a primary expression
+		--  Ambiguous syntax: `f(x)\n(x)()` is already disallowed, we can't cause a problem by removing newlines
+		--  String concat "str1"..a-1.."str2" or "str1"..1-a.."str2" not valid syntax
 
 		-- Figure out what separation is needed
-		if 
+		if
 			(lastCh == '-' and firstCh == '-') or
-			(AllIdentChars[lastCh] and AllIdentChars[firstCh])
+			(AllIdentChars[lastCh] and AllIdentChars[firstCh]) or
+			(tokenA.Type == "Symbol" and tokenA.Source == '..' and tokenB.Type == "Number") or
+			(tokenA.Type == "Number" and tokenB.Type == "Symbol" and tokenB.Source == '..')
 		then
 			tokenB.LeadingWhite = ' ' -- Use a separator
 		else
@@ -2542,9 +2714,9 @@ local function StripAst(ast)
 			stripExpr(expr.Rhs)
 			-- Handle the `- -b` -/-> `--b` case which would otherwise incorrectly generate a comment
 			joint(expr.Token_Op, expr.Rhs:GetFirstToken())
-		elseif expr.Type == 'NumberLiteral' or expr.Type == 'StringLiteral' or 
-			expr.Type == 'NilLiteral' or expr.Type == 'BooleanLiteral' or 
-			expr.Type == 'VargLiteral' 
+		elseif expr.Type == 'NumberLiteral' or expr.Type == 'StringLiteral' or
+			expr.Type == 'NilLiteral' or expr.Type == 'BooleanLiteral' or
+			expr.Type == 'VargLiteral'
 		then
 			-- Just print the token
 			stript(expr.Token)
@@ -2641,8 +2813,8 @@ local function StripAst(ast)
 					-- See if we can remove a semi-colon, the only case where we can't is if
 					-- this and the last statement have a `);(` pair, where removing the semi-colon
 					-- would introduce ambiguous syntax.
-					if stat.SemicolonList[i-1] and 
-						(lastChStat:GetLastToken().Source ~= ')' or chStat:GetFirstToken().Source ~= ')')
+					if stat.SemicolonList[i-1] and
+						(lastChStat:GetLastToken().Source ~= ')' or chStat:GetFirstToken().Source ~= '(')
 					then
 						stat.SemicolonList[i-1] = nil
 					end
@@ -2663,8 +2835,17 @@ local function StripAst(ast)
 				stript(stat.StatementList[1]:GetFirstToken())
 			end
 
+		elseif stat.Type == 'LabelStat' then
+			stript(stat.Token_Label)
+
 		elseif stat.Type == 'BreakStat' then
 			stript(stat.Token_Break)
+
+		elseif stat.Type == 'ContinueStat' then
+			stript(stat.Token_Continue)
+			
+		elseif stat.Type == 'GotoStat' then
+			joint(stat.Token_Goto, stat.Token_Marker)
 
 		elseif stat.Type == 'ReturnStat' then
 			stript(stat.Token_Return)
@@ -2793,7 +2974,7 @@ local function StripAst(ast)
 				end
 			end
 			joint(stat.RangeList[#stat.RangeList]:GetLastToken(), stat.Token_Do)
-			bodyjoint(stat.Token_Do, stat.Body, stat.Token_End)	
+			bodyjoint(stat.Token_Do, stat.Body, stat.Token_End)
 		elseif stat.Type == 'WhileStat' then
 			stript(stat.Token_While)
 			stripExpr(stat.Condition)
@@ -2850,13 +3031,12 @@ local function StripAst(ast)
 			end
 		else
 			assert(false, "unreachable")
-		end	
+		end
 	end
 
 	stripStat(ast)
 end
 
-local idGen = 0
 local VarDigits = {}
 for i = ('a'):byte(), ('z'):byte() do table.insert(VarDigits, string.char(i)) end
 for i = ('A'):byte(), ('Z'):byte() do table.insert(VarDigits, string.char(i)) end
@@ -2871,23 +3051,11 @@ local function indexToVarName(index)
 	index = (index - d) / #VarStartDigits
 	id = id..VarStartDigits[d+1]
 	while index > 0 do
-		local d = index % #VarDigits
+		d = index % #VarDigits
 		index = (index - d) / #VarDigits
 		id = id..VarDigits[d+1]
 	end
 	return id
-end
-local function genNextVarName()
-	local varToUse = idGen
-	idGen = idGen + 1
-	return indexToVarName(varToUse)
-end
-local function genVarName()
-	local varName = ''
-	repeat
-		varName = genNextVarName()
-	until not Keywords[varName]
-	return varName
 end
 local function MinifyVariables(globalScope, rootScope)
 	-- externalGlobals is a set of global variables that have not been assigned to, that is
@@ -2896,25 +3064,17 @@ local function MinifyVariables(globalScope, rootScope)
 	-- things so we keep track of them in this set.
 	local externalGlobals = {}
 
-	-- First we want to rename all of the variables to unique temoraries, so that we can
+	-- First we want to rename all of the variables to unique temporaries, so that we can
 	-- easily use the scope::GetVar function to check whether renames are valid.
-	local temporaryIndex = 0
+	--local temporaryIndex = 0
 	for _, var in pairs(globalScope) do
 		if var.AssignedTo then
-			var:Rename('_TMP_'..temporaryIndex..'_')
-			temporaryIndex = temporaryIndex + 1
+			--var:Rename('_TMP_'..temporaryIndex..'_')
+			--temporaryIndex = temporaryIndex + 1
+			-- do not rename globals
 		else
 			-- Not assigned to, external global
 			externalGlobals[var.Name] = true
-		end
-	end
-	local function temporaryRename(scope)
-		for _, var in pairs(scope.VariableList) do
-			var:Rename('_TMP_'..temporaryIndex..'_')
-			temporaryIndex = temporaryIndex + 1
-		end
-		for _, childScope in pairs(scope.ChildScopeList) do
-			temporaryRename(childScope)
 		end
 	end
 
@@ -2925,12 +3085,14 @@ local function MinifyVariables(globalScope, rootScope)
 	local nextFreeNameIndex = 0
 	for _, var in pairs(globalScope) do
 		if var.AssignedTo then
-			local varName = ''
+			--[[
+			local varName
 			repeat
 				varName = indexToVarName(nextFreeNameIndex)
 				nextFreeNameIndex = nextFreeNameIndex + 1
 			until not Keywords[varName] and not externalGlobals[varName]
 			var:Rename(varName)
+			]] -- do not rename globals
 		end
 	end
 
@@ -2938,7 +3100,7 @@ local function MinifyVariables(globalScope, rootScope)
 	rootScope.FirstFreeName = nextFreeNameIndex
 	local function doRenameScope(scope)
 		for _, var in pairs(scope.VariableList) do
-			local varName = ''
+			local varName
 			repeat
 				varName = indexToVarName(scope.FirstFreeName)
 				scope.FirstFreeName = scope.FirstFreeName + 1
@@ -2973,10 +3135,10 @@ local function MinifyVariables_2(globalScope, rootScope)
 				-- We can try to rename this global since it was assigned to
 				-- (and thus presumably initialized) in the script we are 
 				-- minifying.
-				table.insert(allVariables, var)
+				--table.insert(allVariables, var)
 			else
 				-- We can't rename this global, mark it as an unusable name
-				-- and don't add it to the nename list
+				-- and don't add it to the rename list
 				globalUsedNames[var.Name] = true
 			end
 		end
@@ -3021,7 +3183,7 @@ local function MinifyVariables_2(globalScope, rootScope)
 
 	-- For each variable, go to rename it
 	for _, var in pairs(allVariables) do
-		-- Lazy... todo: Make theis pair a proper for-each-pair-like set of loops 
+		-- Lazy... todo: Make this pair a proper for-each-pair-like set of loops
 		-- rather than using a renamed flag.
 		var.Renamed = true
 
@@ -3046,7 +3208,7 @@ local function MinifyVariables_2(globalScope, rootScope)
 						--  or
 						-- Check case 3
 						-- The other var is at a shallower depth, is there a reference to it
-						-- durring this variable's lifetime?
+						-- during this variable's lifetime?
 						for _, refAt in pairs(otherVar.ReferenceLocationList) do
 							if refAt >= var.BeginLocation and refAt <= var.ScopeEndLocation then
 								-- Collide
@@ -3122,7 +3284,7 @@ local function MinifyVariables_2(globalScope, rootScope)
 	-- 	io.write("\n\n")
 	-- end
 
-	-- -- First we want to rename all of the variables to unique temoraries, so that we can
+	-- -- First we want to rename all of the variables to unique temporaries, so that we can
 	-- -- easily use the scope::GetVar function to check whether renames are valid.
 	-- local temporaryIndex = 0
 	-- for _, var in pairs(allVariables) do
@@ -3136,13 +3298,138 @@ local function MinifyVariables_2(globalScope, rootScope)
 	--error()
 end
 
+local function MinifyVariables_3(globalScope, rootScope)
+	local globals = {}
+	for kw in pairs(Keywords) do
+		globals[kw] = true
+	end
+	local scope = {}
+	for _, var in pairs(globalScope) do
+		if var.AssignedTo then -- prepare global scope i.e. level 0
+			scope[var.Name] = { { var }, #var.ReferenceLocationList }
+		else -- prepare globals
+			globals[var.Name] = #var.ReferenceLocationList
+		end
+	end
+
+	local variables = {}
+	local function DeepNest(nest, scope)
+		local deepscope = {}
+		for key, value in pairs(scope) do -- copy previous scope
+			deepscope[key] = value
+		end
+		for _, var in pairs(nest.VariableList) do -- verify local variables
+			table.insert(variables, var)
+			local varName = var.Name
+			if not globals[varName] then
+				if not deepscope[varName] then -- if this variable only exists in this scope, define use count
+					deepscope[varName] = { { var }, #var.ReferenceLocationList }
+				else -- if this variable exists in top scope iterate use count,
+					table.insert(deepscope[varName][1], var)
+					deepscope[varName][2] = deepscope[varName][2] + #var.ReferenceLocationList
+				end
+				var.RefCount = deepscope[varName][2]
+			else -- Add global variable use count
+				globals[varName] = globals[varName] + #var.ReferenceLocationList
+				var.RefCount = globals[varName]
+			end
+		end
+		nest.NestedVariables = deepscope -- store this data
+		for _, childScope in pairs(nest.ChildScopeList) do
+			DeepNest(childScope, deepscope)
+		end
+	end
+	DeepNest(rootScope, scope)
+
+	local nextFreeNameIndex = 0
+	table.sort(variables, function(a,b) return a.RefCount > b.RefCount end)
+	for _, var in pairs(variables) do
+		if globals[var.Name] and var.Type == "Global" then
+			local varName
+			repeat
+				varName = indexToVarName(nextFreeNameIndex)
+				nextFreeNameIndex = nextFreeNameIndex + 1
+			until not Keywords[varName] and not globals[varName]
+			local prevName = var.Name
+			var:Rename(varName)
+			var.Renamed = true
+			globals[varName] = globals[prevName]
+			globals[prevName] = nil
+		end
+	end
+
+	rootScope.FirstFreeName = nextFreeNameIndex
+	local function LocalRename(nest, scope)
+		--[[local varlevels, varnames = {}, {}
+		for varName, count in pairs(nest.NestedVariables) do
+			varlevels[#varlevels + 1] = {varName, count}
+		end
+		table.sort(varlevels, function(a,b) return a[2] > b[2] end)
+		for top, varinfo in pairs(varlevels) do
+			varnames[varinfo[1] ] = top
+		end
+		for _, var in pairs(nest.VariableList) do
+			if not globals[var.Name] and nest.NestedVariables[var.Name] and not scope[var.Name] then
+			end
+		end]]
+		local arguments = {}
+		for _, var in pairs(nest.VariableList) do
+			--[[local type = var.Info.Type
+			if type == "Argument" then -- its function argument, that can safe redefine underscope locals
+				arguments[#arguments + 1] = var
+				
+			elseif type == "Local" then -- its local variable]]
+				if var.Name ~= 'self' then -- in case when we have metafunction self can't be redefined
+				-- @TODO: local a=self a:metamethods(...)
+
+				--[[local vars = nest.NestedVariables[var.Name]
+				if vars and not vars[3] and var.Info.Type ~= "Argument" then
+					print(var.Name, var.Info.Type)
+					vars[3] = true
+					local varName1
+					repeat
+						varName1 = indexToVarName(nest.FirstFreeName)
+						nest.FirstFreeName = nest.FirstFreeName + 1
+					until not Keywords[varName1] and not globals[varName1]
+					for _, var in ipairs(vars[1]) do
+						if not var.Renamed then
+							var:Rename(varName1)
+							var.Renamed = false
+						end
+					end
+				else]]if not var.Renamed and not globals[var.Name] then
+						local varName1
+						repeat
+							varName1 = indexToVarName(nest.FirstFreeName)
+							nest.FirstFreeName = nest.FirstFreeName + 1
+						until not Keywords[varName1] and not globals[varName1] and not scope[varName1]
+						if scope[var.Name] then
+							scope[varName1] = scope[var.Name]
+							scope[var.Name] = nil
+						end
+						var:Rename(varName1)
+						var.Renamed = true
+					end
+			end
+		end
+		for _, childScope in pairs(nest.ChildScopeList) do
+			childScope.FirstFreeName = nest.FirstFreeName
+			LocalRename(childScope, scope)
+		end
+	end
+	LocalRename(rootScope, scope)
+end
+
 local function BeautifyVariables(globalScope, rootScope)
+	-- externalGlobals isn't used anywhere, so this setup seems pointless
+	--[[
 	local externalGlobals = {}
 	for _, var in pairs(globalScope) do
 		if not var.AssignedTo then
 			externalGlobals[var.Name] = true
 		end
 	end
+	--]]
 
 	local localNumber = 1
 	local globalNumber = 1
@@ -3174,8 +3461,8 @@ local function BeautifyVariables(globalScope, rootScope)
 			setVarName(var, name)
 			localNumber = localNumber + 1
 		end
-		for _, scope in pairs(scope.ChildScopeList) do
-			modify(scope)
+		for _, child in pairs(scope.ChildScopeList) do
+			modify(child)
 		end
 	end
 	modify(rootScope)
@@ -3192,36 +3479,30 @@ local function usageError()
 			"    find-replacable ones to aide in reverse engineering minified code.\n", 0)
 end
 
-local args = {...}
-if #args ~= 2 then
-	usageError()
+-- Enable this file to be used as a module:
+-- If it gets loaded via require(), return a module table with exported entities
+local calledfrom = debug.getinfo(2, "n").name
+if calledfrom == "require" or calledfrom == "include" then
+	return {
+		AddVariableInfo = AddVariableInfo,
+		AstToString = AstToString,
+		BeautifyVariables = BeautifyVariables,
+		CountTable = CountTable,
+		CreateLuaParser = CreateLuaParser,
+		CreateLuaTokenStream = CreateLuaTokenStream,
+		FormatAst = FormatAst,
+		FormatTable = FormatTable,
+		-- GlobalRenameIgnore = GlobalRenameIgnore,
+		MinifyVariables = MinifyVariables_3,
+		PrintAst = PrintAst,
+		StripAst = StripAst,
+    Minify = function(data)
+      local ast = CreateLuaParser(data)
+      local global_scope, root_scope = AddVariableInfo(ast)
+      MinifyVariables_3(global_scope, root_scope)
+      StripAst(ast)
+      return AstToString(ast)
+    end
+	}
 end
 
-local sourceFile = io.open(args[2], 'r')
-if not sourceFile then
-	error("Could not open the input file `" .. args[2] .. "`", 0)
-end
-
-local data = sourceFile:read('*all')
-local ast = CreateLuaParser(data)
-local global_scope, root_scope = AddVariableInfo(ast)
-
-local function minify(ast, global_scope, root_scope)
-	MinifyVariables(global_scope, root_scope)
-	StripAst(ast)
-	PrintAst(ast)
-end
-
-local function beautify(ast, global_scope, root_scope)
-	BeautifyVariables(global_scope, root_scope)
-	FormatAst(ast)
-	PrintAst(ast)
-end
-
-if args[1] == 'minify' then
-	minify(ast, global_scope, root_scope)
-elseif args[1] == 'unminify' then
-	beautify(ast, global_scope, root_scope)
-else
-	usageError()
-end
